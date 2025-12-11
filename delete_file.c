@@ -4,12 +4,12 @@
 #include "qfs.h"
 
 int main(int argc, char *argv[]) {
-    if (argc != 4) {
-        fprintf(stderr, "Usage: %s <disk image file> <file to read> <output file>\n", argv[0]);
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <disk image file> <file to remove>\n", argv[0]);
         return 1;
     }
 
-    FILE *fp = fopen(argv[1], "rb");
+    FILE *fp = fopen(argv[1], "rb+");
     if (!fp) {
         perror("fopen");
         return 2;
