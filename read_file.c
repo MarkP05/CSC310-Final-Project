@@ -1,74 +1,137 @@
+/*Lehan Dharmatilake
+ * CSC 310 - Operating Systems Final Project
+ * 12/11/2025
+ * read_file.c
+ *
+ * A utility to extract a file stored in a QFS filesystem image.
+ *
+ * Usage: read_file <filesystem_image> <filename_in_qfs> <output_file>
+ *
+ * This program opens a QFS filesystem image, locates the specified file in the
+ * directory table, follows its linked data blocks, and writes the recovered
+ * contents to a local output file. It supports the QFS block structure where
+ * each block contains 510 bytes of data followed by a 2-byte pointer to the
+ * next block (0xFFFF indicates the end of file).
+ */
+
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include "qfs.h"
 
+/*
+   read_file <diskimage> <filename> <outputfile>
+*/
+
 int main(int argc, char *argv[]) {
+
     if (argc != 4) {
-        fprintf(stderr, "Usage: %s <disk image file> <file to read> <output file>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <disk image> <filename> <output file>\n", argv[0]);
         return 1;
     }
 
-    FILE *fp = fopen(argv[1], "rb");
+    const char *diskimg = argv[1];
+    const char *target  = argv[2];
+    const char *outfile = argv[3];
+
+    FILE *fp = fopen(diskimg, "rb");
     if (!fp) {
-        perror("fopen");
+        perror("fopen(disk image)");
         return 2;
     }
 
-    // Read the superblock
-    superblock_t super;
-    fseek(fp, 0, SEEK_SET);
-    fread(&super, sizeof(superblock_t), 1, fp);
+    // ---------------------------------------------------
+    // Read superblock
+    // ---------------------------------------------------
+    superblock_t sb;
+    if (fread(&sb, sizeof(superblock_t), 1, fp) != 1) {
+        fprintf(stderr, "Error: cannot read superblock\n");
+        fclose(fp);
+        return 3;
+    }
 
-    // Read directory entries
+    // Directory entries start immediately after superblock
     direntry_t dir;
     int found = 0;
-    for (int i = 0; i < super.total_direntries; i++) {
-        fseek(fp, sizeof(superblock_t) + i * sizeof(direntry_t), SEEK_SET);
-        fread(&dir, sizeof(direntry_t), 1, fp);
+    long dir_start = sizeof(superblock_t);
 
-        if (dir.filename[0] != '\0' && strcmp(dir.filename, argv[2]) == 0) {
+    fseek(fp, dir_start, SEEK_SET);
+
+    // ---------------------------------------------------
+    // Scan directory entries
+    // ---------------------------------------------------
+    for (int i = 0; i < sb.total_direntries; i++) {
+
+        if (fread(&dir, sizeof(direntry_t), 1, fp) != 1) {
+            fprintf(stderr, "Error reading directory entry %d\n", i);
+            fclose(fp);
+            return 4;
+        }
+
+        if (dir.filename[0] == 0)
+            continue;  // empty entry
+
+        if (strcmp((char*)dir.filename, target) == 0) {
             found = 1;
             break;
         }
     }
 
     if (!found) {
-        fprintf(stderr, "File '%s' not found on disk image.\n", argv[2]);
+        fprintf(stderr, "File \"%s\" not found in disk image.\n", target);
         fclose(fp);
-        return 3;
+        return 5;
     }
 
-    FILE *out = fopen(argv[3], "wb");
+    // ---------------------------------------------------
+    // Open output file
+    // ---------------------------------------------------
+    FILE *out = fopen(outfile, "wb");
     if (!out) {
-        perror("fopen output file");
+        perror("fopen(output file)");
         fclose(fp);
-        return 4;
+        return 6;
     }
 
-    // Read file blocks
+    // ---------------------------------------------------
+    // Begin block traversal
+    // ---------------------------------------------------
     uint16_t block = dir.starting_block;
     uint32_t remaining = dir.file_size;
-    uint8_t buffer[super.bytes_per_block];
 
     while (block != 0xFFFF && remaining > 0) {
-        fseek(fp, block * super.bytes_per_block, SEEK_SET);
-        fread(buffer, 1, super.bytes_per_block, fp);
 
-        // Write only remaining bytes
-        uint32_t to_write = remaining < super.bytes_per_block ? remaining : super.bytes_per_block;
-        fwrite(buffer, 1, to_write, out);
+        // Compute location of block in disk
+        long block_offset = sizeof(superblock_t)
+                          + sizeof(direntry_t) * sb.total_direntries
+                          + (long)block * sb.bytes_per_block;
 
-        remaining -= to_write;
+        fseek(fp, block_offset, SEEK_SET);
 
-        // Next block number is at the last 2 bytes of the block (depending on your spec)
-        uint16_t *next = (uint16_t*)(buffer + super.bytes_per_block - 2);
-        block = *next;
+        uint8_t buffer[512];
+        if (fread(buffer, sb.bytes_per_block, 1, fp) != 1) {
+            fprintf(stderr, "Error reading block %u\n", block);
+            fclose(fp);
+            fclose(out);
+            return 7;
+        }
+
+        // Last 2 bytes = next block number
+        uint16_t next = buffer[510] | (buffer[511] << 8);
+
+        // Data = first 510 bytes (or fewer if last block)
+        uint32_t chunk = (remaining > 510) ? 510 : remaining;
+        fwrite(buffer, chunk, 1, out);
+
+        remaining -= chunk;
+        block = next;
     }
 
-    fclose(out);
     fclose(fp);
+    fclose(out);
 
-    printf("File '%s' has been extracted to '%s'.\n", argv[2], argv[3]);
+    printf("Extracted \"%s\" to \"%s\" successfully.\n", target, outfile);
     return 0;
 }
