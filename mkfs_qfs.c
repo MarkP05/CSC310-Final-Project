@@ -1,5 +1,10 @@
 /*
-**Program to make a filesystem on a blank file using the qfs parameters
+** Diego Matayoshi
+** CSC 310 - Operating Systems Final Project
+** 12/11/2025
+** mkfs.qfs.c
+**
+** Program to make a filesystem on a blank file using the qfs parameters
 **
 ** Usage: mkfs_qfs <disk image file> [<label>]
 **
