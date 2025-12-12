@@ -21,12 +21,11 @@
 #include <stdlib.h>
 #include "qfs.h"
 
-/*
-   read_file <diskimage> <filename> <outputfile>
-*/
-
 int main(int argc, char *argv[]) {
 
+    // ---------------------------------------------------
+    // Validate arguments
+    // ---------------------------------------------------
     if (argc != 4) {
         fprintf(stderr, "Usage: %s <disk image> <filename> <output file>\n", argv[0]);
         return 1;
@@ -36,6 +35,9 @@ int main(int argc, char *argv[]) {
     const char *target  = argv[2];
     const char *outfile = argv[3];
 
+    // ---------------------------------------------------
+    // Open disk image
+    // ---------------------------------------------------
     FILE *fp = fopen(diskimg, "rb");
     if (!fp) {
         perror("fopen(disk image)");
@@ -52,16 +54,14 @@ int main(int argc, char *argv[]) {
         return 3;
     }
 
-    // Directory entries start immediately after superblock
-    direntry_t dir;
-    int found = 0;
-    long dir_start = sizeof(superblock_t);
-
-    fseek(fp, dir_start, SEEK_SET);
-
     // ---------------------------------------------------
     // Scan directory entries
     // ---------------------------------------------------
+    direntry_t dir;
+    int found = 0;
+
+    fseek(fp, sizeof(superblock_t), SEEK_SET);
+
     for (int i = 0; i < sb.total_direntries; i++) {
 
         if (fread(&dir, sizeof(direntry_t), 1, fp) != 1) {
@@ -70,10 +70,12 @@ int main(int argc, char *argv[]) {
             return 4;
         }
 
-        if (dir.filename[0] == 0)
-            continue;  // empty entry
+        // Skip empty directory entries
+        if (dir.filename[0] == '\0')
+            continue;
 
-        if (strcmp((char*)dir.filename, target) == 0) {
+        // Check filename match
+        if (strcmp(dir.filename, target) == 0) {
             found = 1;
             break;
         }
@@ -101,34 +103,56 @@ int main(int argc, char *argv[]) {
     uint16_t block = dir.starting_block;
     uint32_t remaining = dir.file_size;
 
-    while (block != 0xFFFF && remaining > 0) {
+    // Allocate buffer based on block size
+    uint8_t *buffer = malloc(sb.bytes_per_block);
+    if (!buffer) {
+        fprintf(stderr, "Memory allocation failed\n");
+        fclose(fp);
+        fclose(out);
+        return 7;
+    }
 
-        // Compute location of block in disk
-        long block_offset = sizeof(superblock_t)
-                          + sizeof(direntry_t) * sb.total_direntries
-                          + (long)block * sb.bytes_per_block;
+    // Amount of actual file data per block
+    uint32_t data_per_block = sb.bytes_per_block - 3;
+
+    while (remaining > 0 && block != 0xFFFF) {
+
+        // Compute block offset in disk image
+        long block_offset =
+            sizeof(superblock_t) +
+            sizeof(direntry_t) * sb.total_direntries +
+            (long)block * sb.bytes_per_block;
 
         fseek(fp, block_offset, SEEK_SET);
 
-        uint8_t buffer[512];
+        // Read entire block
         if (fread(buffer, sb.bytes_per_block, 1, fp) != 1) {
             fprintf(stderr, "Error reading block %u\n", block);
+            free(buffer);
             fclose(fp);
             fclose(out);
-            return 7;
+            return 8;
         }
 
-        // Last 2 bytes = next block number
-        uint16_t next = buffer[510] | (buffer[511] << 8);
+        // Read next block pointer (last two bytes)
+        uint16_t next =
+            buffer[sb.bytes_per_block - 2] |
+            (buffer[sb.bytes_per_block - 1] << 8);
 
-        // Data = first 510 bytes (or fewer if last block)
-        uint32_t chunk = (remaining > 510) ? 510 : remaining;
-        fwrite(buffer, chunk, 1, out);
+        // Write only file data (skip busy byte)
+        uint32_t chunk =
+            (remaining > data_per_block) ? data_per_block : remaining;
+
+        fwrite(buffer + 1, chunk, 1, out);
 
         remaining -= chunk;
         block = next;
     }
 
+    // ---------------------------------------------------
+    // Cleanup
+    // ---------------------------------------------------
+    free(buffer);
     fclose(fp);
     fclose(out);
 
